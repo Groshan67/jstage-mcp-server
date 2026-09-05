@@ -1,0 +1,27 @@
+{
+  "name": "jstage-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for searching J-STAGE (Japanese scientific/technical literature platform, run by JST)",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "jstage-mcp-server": "build/index.js"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x build/index.js",
+    "start:stdio": "MCP_TRANSPORT_TYPE=stdio node build/index.js",
+    "start:http": "MCP_TRANSPORT_TYPE=http node build/index.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.0",
+    "fast-xml-parser": "^4.5.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
