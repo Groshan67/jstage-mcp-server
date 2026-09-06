@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express from "express";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import express, { Request, Response } from "express";
+import { randomUUID } from "node:crypto";
 import { createJStageMcpServer } from "./server.js";
 
 const TRANSPORT_TYPE = process.env.MCP_TRANSPORT_TYPE ?? "stdio";
@@ -25,43 +27,79 @@ async function runHttp() {
     res.status(200).send("jstage-mcp-server is running. MCP endpoint: POST /mcp");
   });
 
-  // این سرور واقعاً stateless‌ه: هر درخواست POST یه server/transport جدید می‌سازه
-  // و هیچ session ای بین درخواست‌ها حفظ نمی‌شه. برای این‌که transport هم دقیقاً
-  // همین رفتار رو ازش انتظار داشته باشه (و session ID رو بین initialize و
-  // درخواست‌های بعدی چک نکنه)، sessionIdGenerator رو صراحتاً undefined می‌ذاریم.
-  // اگه یه sessionIdGenerator واقعی (مثلاً randomUUID) بدیم ولی خودمون session رو
-  // جایی ذخیره نکنیم، درخواست دوم (tools/list) با خطای «session not found» رد
-  // می‌شه و کلاینت (مثلاً Claude) فقط می‌گه «no tools available» بدون جزئیات.
-  app.post("/mcp", async (req, res) => {
-    const server = createJStageMcpServer();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
+  /**
+   * چرا اینجا از حالت stateful واقعی استفاده می‌کنیم (نه transport جدید در هر
+   * request):
+   *
+   * قابلیت‌هایی مثل Completions شامل چندین درخواست *مستقل* در طول زمانن
+   * (هر حرفی که تایپ می‌شه، یه completion/complete جدا می‌فرسته) که هیچ‌کدوم
+   * دوباره initialize رو بسته‌بندی نمی‌کنن — چون فرض می‌کنن سرور از قبل session
+   * رو یادشه. اگه هر request یه transport تازه و بی‌خبر بسازه، این درخواست‌های
+   * مستقل به یه transport مقداردهی‌نشده می‌خورن و رد می‌شن.
+   *
+   * چون این سرور (برخلاف یه تابع serverless مثل Vercel Function) یه پروسه‌ی
+   * Node همیشه‌روشن روی Railway‌ست، نگه‌داشتن session‌ها توی یه Map ساده‌ی
+   * داخل حافظه کاملاً امن و کافیه — نیازی به Redis نیست.
+   */
+  const sessions: Record<
+    string,
+    { server: ReturnType<typeof createJStageMcpServer>; transport: StreamableHTTPServerTransport }
+  > = {};
+
+  app.post("/mcp", async (req: Request, res: Response) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    if (sessionId && sessions[sessionId]) {
+      // درخواست بعدی از یه session از قبل شناخته‌شده — از همون transport استفاده کن
+      await sessions[sessionId].transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    if (!sessionId && isInitializeRequest(req.body)) {
+      // اولین درخواست یه session جدید — server و transport جدید بساز
+      const server = createJStageMcpServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (newSessionId) => {
+          sessions[newSessionId] = { server, transport };
+        },
+      });
+
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          delete sessions[transport.sessionId];
+        }
+      };
+
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    // نه session شناخته‌شده، نه یه initialize جدید — درخواست نامعتبره
+    res.status(400).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Bad Request: No valid session ID provided.",
+      },
+      id: null,
     });
-    res.on("close", () => {
-      transport.close();
-      server.close();
-    });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
   });
 
-  // طبق مستندات رسمی SDK، برای حالت stateless بهتره GET/DELETE رو صراحتاً
-  // 405 برگردونیم (نه بذاریم Express خودش 404 پیش‌فرض بده) چون این متدها
-  // فقط برای مدیریت session معنا دارن که ما اصلاً نداریم.
-  app.get("/mcp", (_req, res) => {
-    res.status(405).json({
-      jsonrpc: "2.0",
-      error: { code: -32000, message: "Method not allowed (stateless server)." },
-      id: null,
-    });
-  });
-  app.delete("/mcp", (_req, res) => {
-    res.status(405).json({
-      jsonrpc: "2.0",
-      error: { code: -32000, message: "Method not allowed (stateless server)." },
-      id: null,
-    });
-  });
+  // GET برای استریم SSE (پیام‌های سرور به کلاینت) و DELETE برای پایان دادن به session
+  // هر دو نیاز به همون session از قبل مقداردهی‌شده دارن.
+  const handleSessionRequest = async (req: Request, res: Response) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (!sessionId || !sessions[sessionId]) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
+    await sessions[sessionId].transport.handleRequest(req, res);
+  };
+
+  app.get("/mcp", handleSessionRequest);
+  app.delete("/mcp", handleSessionRequest);
 
   app.listen(HTTP_PORT, () => {
     console.error(

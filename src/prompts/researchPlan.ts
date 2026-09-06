@@ -3,58 +3,128 @@ import { completable } from "@modelcontextprotocol/sdk/server/completable.js";
 import { z } from "zod";
 import { queryJStage } from "../services/jstage/client.js";
 
+/**
+ * فهرست موضوعات نمونه برای پیشنهاد خودکار (Completions) روی فیلد topic.
+ * از حوزه‌های مختلف انتخاب شدن (نه فقط هوش مصنوعی) تا کاربر یه حس واقعی از
+ * تنوع محتوای J-STAGE بگیره. هر مدخل: [کلیدواژه‌ی ژاپنی, معادل فارسی برای راهنما]
+ */
+const TOPIC_SUGGESTIONS: { term: string; glossFa: string }[] = [
+  { term: "人工知能", glossFa: "هوش مصنوعی" },
+  { term: "機械学習", glossFa: "یادگیری ماشین" },
+  { term: "再生可能エネルギー", glossFa: "انرژی تجدیدپذیر" },
+  { term: "遺伝子治療", glossFa: "ژن‌درمانی" },
+  { term: "気候変動", glossFa: "تغییر اقلیم" },
+  { term: "ロボット工学", glossFa: "رباتیک" },
+  { term: "地震工学", glossFa: "مهندسی زلزله" },
+  { term: "防災", glossFa: "پیشگیری از بلایا" },
+  { term: "量子コンピュータ", glossFa: "رایانش کوانتومی" },
+  { term: "半導体", glossFa: "نیمه‌هادی‌ها" },
+  { term: "がん治療", glossFa: "درمان سرطان" },
+  { term: "海洋生物学", glossFa: "زیست‌شناسی دریایی" },
+  { term: "農業技術", glossFa: "فناوری کشاورزی" },
+  { term: "新素材", glossFa: "مواد نوین" },
+  { term: "感染症", glossFa: "بیماری‌های عفونی" },
+];
+
+function matchSuggestions(value: string): string[] {
+  const query = value.trim().toLowerCase();
+  if (!query) return TOPIC_SUGGESTIONS.map((t) => t.term);
+
+  return TOPIC_SUGGESTIONS.filter(
+    (t) =>
+      t.term.includes(query) ||
+      t.glossFa.toLowerCase().includes(query) ||
+      t.term.toLowerCase().startsWith(query)
+  ).map((t) => t.term);
+}
+
+function formatNumber(n?: number): string {
+  if (n === undefined) return "نامشخص";
+  return n.toLocaleString("en-US");
+}
+
 export function registerResearchPlanPrompt(server: McpServer): void {
   server.registerPrompt(
     "jstage_research_plan",
     {
-      title: "J-STAGE Research Plan (برنامه پژوهشی)",
+      title: "برنامه‌ی تحقیق روی J-STAGE",
       description:
-        "انجام یک تحقیق گام‌به‌گام در J-STAGE: پیدا کردن برترین مقالات، بررسی نشریات مرتبط و ارائه خلاصه‌ای از وضعیت علمی موضوع دلخواه شما.",
+        "یه برنامه‌ی جستجوی چندمرحله‌ای و آماده روی J-STAGE برای یه موضوع مشخص می‌سازه — " +
+        "شامل پیش‌نمایش تعداد نتایج، راهبرد جستجوی دوزبانه، و مراحل مشخص برای Claude تا دنبال کنه.",
       argsSchema: {
-        topic: completable(z.string(), async (value) => {
-          const suggestions = [
-            "人工知能 (هوش مصنوعی - AI)",
-            "再生可能エネルギー (انرژی‌های تجدیدپذیر)",
-            "遺伝子治療 (ژن‌درمانی)",
-            "気候変動 (تغییرات اقلیمی)",
-            "ロボット工学 (رباتیک)",
-            "高齢化社会 (جامعه سالخورده)",
-          ];
-
-          const lowerValue = value.toLowerCase();
-          return suggestions.filter((s) =>
-            s.toLowerCase().includes(lowerValue)
-          );
-        }),
-        pub_year_from: z.string().optional(),
+        topic: completable(
+          z
+            .string()
+            .describe(
+              "موضوع تحقیق (ترجیحاً ژاپنی یا انگلیسی؛ چندتا نمونه‌ی رایج برای autocomplete در دسترسه)"
+            ),
+          async (value) => matchSuggestions(value)
+        ),
+        depth: z
+          .enum(["quick", "thorough"])
+          .default("thorough")
+          .describe(
+            "quick = فقط یه جستجوی سریع و خلاصه؛ thorough = بررسی کامل شامل نشریات مرتبط و چند دور جستجو"
+          ),
+        pub_year_from: z
+          .string()
+          .optional()
+          .describe("محدود کردن به مقالات بعد از این سال (مثلاً 2018)"),
       },
     },
-    async ({ topic, pub_year_from }) => {
-      // اگر از لیست انتخاب شده باشد، بخش ژاپنی/انگلیسی استخراج می‌شود.
-      // اما اگر کاربر فقط فارسی تایپ کرده باشد، همان کلمه فارسی در این متغیر قرار می‌گیرد.
-      const searchKeyword = topic.split(" (")[0].trim();
+    async ({ topic, depth, pub_year_from }) => {
+      const yearFrom = pub_year_from ? Number(pub_year_from) : undefined;
 
-      // بررسی ساده برای اینکه ببینیم آیا متن شامل حروف فارسی/عربی است یا خیر
-      const hasPersianChars = /[\u0600-\u06FF]/.test(searchKeyword);
-
-      let previewNote = "";
-      
-      // اگر کلمه کاملاً فارسی باشد، API پیش‌نمایش احتمالاً نتیجه‌ای ندارد، پس الکی درخواست نمی‌زنیم
-      if (hasPersianChars) {
-        previewNote = "(پیش‌نمایش تعداد مقالات برای کلمات فارسی در دسترس نیست، اما دستیار ابتدا آن را ترجمه کرده و سپس جستجو می‌کند)";
-      } else {
-        try {
-          const preview = await queryJStage({
-            service: 3,
-            keyword: searchKeyword,
-            count: 3,
-            pubyearfrom: pub_year_from ? Number(pub_year_from) : undefined,
-          });
-          previewNote = `(در حال حاضر حدود ${preview.totalResults ?? "نامشخص"} نتیجه برای این موضوع در J-STAGE ثبت شده)`;
-        } catch {
-          previewNote = "(پیش‌نمایش اولیه در دسترس نبود، ولی برنامه‌ی زیر رو دنبال کن)";
-        }
+      let totalResults: number | undefined;
+      let topJournal: string | undefined;
+      try {
+        const preview = await queryJStage({
+          service: 3,
+          keyword: topic,
+          count: 5,
+          pubyearfrom: yearFrom,
+        });
+        totalResults = preview.totalResults;
+        const firstEntry = preview.entries[0] as
+          | { material_title?: { en?: string; ja?: string } }
+          | undefined;
+        topJournal =
+          firstEntry?.material_title?.en || firstEntry?.material_title?.ja;
+      } catch {
+        // پیش‌نمایش اختیاریه — اگه شکست خورد، برنامه بدون عدد دقیق ادامه پیدا می‌کنه
       }
+
+      const previewLine =
+        totalResults !== undefined
+          ? `📊 در حال حاضر حدود **${formatNumber(totalResults)}** نتیجه برای «${topic}» در J-STAGE ثبت شده${
+              topJournal ? ` (یکی از نشریات پرتکرار: ${topJournal})` : ""
+            }.`
+          : "📊 پیش‌نمایش اولیه در دسترس نبود — ولی برنامه‌ی زیر رو مستقل از اون دنبال کن.";
+
+      const yearNote = yearFrom
+        ? `\n🗓️ فقط مقالات از سال ${yearFrom} به بعد رو در نظر بگیر.`
+        : "";
+
+      const quickSteps = [
+        "۱. با jstage_search_articles یه جستجوی سریع بزن (حداکثر ۱۰ نتیجه کافیه).",
+        "۲. سه مقاله‌ی مرتبط‌تر رو بر اساس عنوان و سال انتخاب کن.",
+        "۳. یه خلاصه‌ی دو-سه خطی از یافته‌ها بده، همراه با لینک/DOI هر مقاله.",
+      ];
+
+      const thoroughSteps = [
+        "۱. با jstage_search_articles روی این موضوع جستجو کن — هم با کلیدواژه‌ی اصلی، هم (اگه موضوع بین‌المللی‌ست) با معادل انگلیسی‌اش.",
+        "۲. نتایج رو بر اساس سال انتشار مرتب کن و ۵ تا ۷ مقاله‌ی مرتبط‌تر رو مشخص کن.",
+        "۳. اگه یه نشریه‌ی خاص توی نتایج پررنگ بود، با jstage_search_journals جزئیات بیشتری ازش بگیر (ISSN، دامنه‌ی موضوعی).",
+        "۴. برای مقاله‌هایی که به‌نظر کلیدی می‌رسن، با jstage_fetch_article_abstract_and_references سعی کن Abstract و بخشی از منابع رو هم دربیاری (توجه: فقط برای بعضی نشریات open-access جواب می‌ده).",
+        "۵. یه خلاصه‌ی ساختاریافته از وضعیت فعلی پژوهش روی این موضوع بنویس: چه زیرشاخه‌هایی پررنگ‌ترن، چه سال‌هایی بیشترین انتشار رو داشتن.",
+        "۶. برای هر مقاله‌ای که معرفی می‌کنی، لینک یا DOI رو هم بده تا در صورت نیاز به متن کامل مراجعه بشه.",
+      ];
+
+      const steps = depth === "quick" ? quickSteps : thoroughSteps;
+
+      const bilingualHint =
+        "💡 یادت باشه: بیشتر محتوای J-STAGE ژاپنی‌زبانه. اگه کلیدواژه‌ی انگلیسی نتیجه‌ی کمی داد، " +
+        "معادل ژاپنی‌اش رو هم امتحان کن (یا برعکس).";
 
       return {
         messages: [
@@ -63,15 +133,14 @@ export function registerResearchPlanPrompt(server: McpServer): void {
             content: {
               type: "text" as const,
               text: [
-                `می‌خوام یه تحقیق ساختاریافته درباره‌ی «${topic}» روی J-STAGE انجام بدم. ${previewNote}`,
+                `## 🔎 برنامه‌ی تحقیق: «${topic}»`,
                 "",
-                "لطفاً این مراحل رو دقیقاً به همین ترتیب دنبال کن:",
-                `۱. اگر عبارت «${searchKeyword}» ژاپنی یا انگلیسی نیست، ابتدا آن را به ژاپنی (و در صورت نیاز انگلیسی) ترجمه کن.`,
-                "۲. سپس با استفاده از ابزار jstage_search_articles و کلمات کلیدی ترجمه‌شده، جستجوی اولیه را انجام بده.",
-                "۳. نتایج رو بر اساس سال انتشار مرتب کن و ۵ مقاله‌ی مرتبط‌تر رو مشخص کن.",
-                "۴. اگه یه نشریه‌ی خاص توی نتایج پررنگ بود، با jstage_search_journals جزئیات بیشتری ازش بگیر.",
-                "۵. یه خلاصه از وضعیت فعلی پژوهش روی این موضوع (بر اساس چکیده‌ها) بنویس.",
-                "۶. برای هر مقاله، لینک یا DOI رو هم بده تا در صورت نیاز به متن کامل مراجعه بشه.",
+                previewLine + yearNote,
+                "",
+                bilingualHint,
+                "",
+                `### مراحل (حالت ${depth === "quick" ? "سریع" : "کامل"}):`,
+                ...steps,
               ].join("\n"),
             },
           },
