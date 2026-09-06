@@ -2,7 +2,6 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
-import { randomUUID } from "node:crypto";
 import { createJStageMcpServer } from "./server.js";
 
 const TRANSPORT_TYPE = process.env.MCP_TRANSPORT_TYPE ?? "stdio";
@@ -26,14 +25,17 @@ async function runHttp() {
     res.status(200).send("jstage-mcp-server is running. MCP endpoint: POST /mcp");
   });
 
-  // برای سادگی، هر درخواست POST به /mcp یه سشن جدید و مستقل می‌سازه (stateless).
-  // اگه نیاز به نگه‌داشتن session بین چند درخواست داری (مثلاً برای SSE)،
-  // باید یه session store (مثل Redis) اضافه کنی — دقیقاً همون الگویی که
-  // adapter رسمی Vercel (mcp-handler) هم برای Next.js استفاده می‌کنه.
+  // این سرور واقعاً stateless‌ه: هر درخواست POST یه server/transport جدید می‌سازه
+  // و هیچ session ای بین درخواست‌ها حفظ نمی‌شه. برای این‌که transport هم دقیقاً
+  // همین رفتار رو ازش انتظار داشته باشه (و session ID رو بین initialize و
+  // درخواست‌های بعدی چک نکنه)، sessionIdGenerator رو صراحتاً undefined می‌ذاریم.
+  // اگه یه sessionIdGenerator واقعی (مثلاً randomUUID) بدیم ولی خودمون session رو
+  // جایی ذخیره نکنیم، درخواست دوم (tools/list) با خطای «session not found» رد
+  // می‌شه و کلاینت (مثلاً Claude) فقط می‌گه «no tools available» بدون جزئیات.
   app.post("/mcp", async (req, res) => {
     const server = createJStageMcpServer();
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+      sessionIdGenerator: undefined,
     });
     res.on("close", () => {
       transport.close();
@@ -41,6 +43,24 @@ async function runHttp() {
     });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
+  });
+
+  // طبق مستندات رسمی SDK، برای حالت stateless بهتره GET/DELETE رو صراحتاً
+  // 405 برگردونیم (نه بذاریم Express خودش 404 پیش‌فرض بده) چون این متدها
+  // فقط برای مدیریت session معنا دارن که ما اصلاً نداریم.
+  app.get("/mcp", (_req, res) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed (stateless server)." },
+      id: null,
+    });
+  });
+  app.delete("/mcp", (_req, res) => {
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Method not allowed (stateless server)." },
+      id: null,
+    });
   });
 
   app.listen(HTTP_PORT, () => {
