@@ -14,6 +14,7 @@ import {
 } from "./tools/fetchArticleText.js";
 import { registerJStageInfoResource } from "./resources/databaseInfo.js";
 import { registerResearchPlanPrompt } from "./prompts/researchPlan.js";
+import { registerSummarizeAndQaPrompt } from "./prompts/summarizeAndQa.js";
 
 /**
  * می‌سازه و همه‌ی ابزارها، منابع و پرامپت‌های J-STAGE رو روش ثبت می‌کنه.
@@ -88,10 +89,11 @@ export function createJStageMcpServer(): McpServer {
       title: "Fetch abstract & references for a J-STAGE article",
       description:
         "برای یه مقاله‌ی مشخص (با لینکی که از jstage_search_articles گرفتی)، سعی می‌کنه " +
-        "چکیده (Abstract) و بخشی از فهرست منابع (References) رو استخراج کنه. " +
-        "⚠️ فقط برای بعضی نشریات J-STAGE (عمدتاً open-access) کار می‌کنه، چون بر پایه‌ی " +
-        "یه نسخه‌ی txt غیررسمی‌ه که فقط بعضی ناشرها منتشرش می‌کنن. اگه در دسترس نبود، " +
-        "پیام مشخصی برمی‌گردونه که یعنی برای این مقاله باید مستقیم از لینک/DOI استفاده کنی.",
+        "چکیده (Abstract) رو از صفحه‌ی معمولی مقاله دربیاره (universal، برای اکثر مقالات کار می‌کنه) " +
+        "و در صورت امکان بخشی از فهرست منابع (References) رو هم از نسخه‌ی txt (فقط بعضی نشریات) اضافه کنه. " +
+        "💡 نکته: اگه هدف نهایی خلاصه‌سازی یا پرسش‌وپاسخ فارسی روی این مقاله‌ست، به‌جای صدا زدن مستقیم " +
+        "این ابزار، بهتره از prompt جدا jstage_summarize_and_qa استفاده کنی که دستورالعمل خلاصه‌سازی " +
+        "غیرتحت‌اللفظی رو هم شامل می‌شه.",
       inputSchema: fetchArticleTextSchema,
     },
     fetchArticleTextHandler
@@ -102,6 +104,7 @@ export function createJStageMcpServer(): McpServer {
 
   // ---------- Prompts (شامل Completions) ----------
   registerResearchPlanPrompt(server);
+  registerSummarizeAndQaPrompt(server);
 
   return server;
 }

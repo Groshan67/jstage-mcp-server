@@ -1,26 +1,131 @@
+import * as cheerio from "cheerio";
+
 /**
- * بعضی نشریات J-STAGE (نه همه، بستگی به تنظیمات ناشر داره) یه نسخه‌ی متنیِ
- * ساده (txt) از مقاله رو مستقیم از طریق یه URL خاص منتشر می‌کنن:
+ * دو راه برای گرفتن Abstract/References از J-STAGE:
  *
- *   https://www.jstage.jst.go.jp/article/{cdjournal}/{vol}/{no}/{articleId}/_article/-char/{lang}
- *   →  همون آدرس با یه بخش download/ اضافه:
- *   https://www.jstage.jst.go.jp/article/{cdjournal}/{vol}/{no}/{articleId}/_article/download/-char/{lang}
+ * ۱. صفحه‌ی معمولی مقاله (article_link که همیشه توی نتیجه‌ی جستجو هست) —
+ *    این universal‌تره چون تقریباً همه‌ی نشریات چکیده رو توی این صفحه نشون
+ *    می‌دن (حتی مقالات پولی)، برخلاف نسخه‌ی txt که فقط بعضی نشریات دارن.
  *
- * این تابع سعی می‌کنه از روی لینک صفحه‌ی مقاله (که در نتیجه‌ی jstage_search_articles
- * برمی‌گرده)، آدرس نسخه‌ی txt رو بسازه. اگه الگوی لینک مطابقت نداشته باشه، null برمی‌گردونه
- * (یعنی این قابلیت برای اون مقاله/نشریه پشتیبانی نمی‌شه).
+ * ۲. نسخه‌ی txt (فقط برای نشریات open-access که این قابلیت رو فعال کردن) —
+ *    عمدتاً برای گرفتن References استفاده می‌شه، چون صفحه‌ی معمولی معمولاً
+ *    فهرست منابع رو نشون نمی‌ده.
  *
- * ⚠️ نکته‌ی مهم: این یه رفتار مستندنشده‌ی سطح وب‌سایته، نه بخشی از J-STAGE WebAPI رسمی.
- * فقط برای نشریاتی کار می‌کنه که این‌جوری منتشرش کردن (معمولاً نشریات کاملاً open-access).
- * برای هر نشریه/فرمت جدید ممکنه نیاز به تنظیم این تابع باشه.
+ * هر دو best-effort و heuristic هستن؛ نه بخشی از J-STAGE WebAPI رسمی.
  */
-export function buildTextDownloadUrl(articleLink: string): string | null {
+
+async function fetchUtf8(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "jstage-mcp-server/0.3.0" },
+    });
+    if (!response.ok) return null;
+    const buffer = await response.arrayBuffer();
+    return new TextDecoder("utf-8").decode(buffer);
+  } catch {
+    return null;
+  }
+}
+
+// این متن دقیقاً همون توضیح ثابت و سراسری J-STAGE‌ه (نه چکیده‌ی یه مقاله‌ی خاص) —
+// یه‌بار با meta description اشتباهی گرفتیم، برای همین صریح فیلترش می‌کنیم.
+const KNOWN_SITE_BOILERPLATE = [
+  "access full-text academic articles",
+  "j-stage is an online platform",
+];
+
+function looksLikeSiteBoilerplate(text: string): boolean {
+  const lower = text.toLowerCase();
+  return KNOWN_SITE_BOILERPLATE.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * از صفحه‌ی معمولی مقاله، چکیده رو با چندتا heuristic پشت‌سرهم امتحان می‌کنه.
+ * ترتیب مهمه: اول سراغ محتوای واقعی صفحه (که مخصوص همین مقاله‌ست) می‌ریم،
+ * و متاتگ‌های SEO رو آخر صف می‌ذاریم چون یه‌بار دیدیم ممکنه فقط توضیح
+ * ثابت و سراسری کل سایت باشن، نه چکیده‌ی واقعی این مقاله.
+ */
+async function extractAbstractFromArticlePage(
+  articleLink: string
+): Promise<string | undefined> {
+  console.error(`[textExtractor] در حال fetch کردن: ${articleLink}`);
+  const html = await fetchUtf8(articleLink);
+  if (!html) {
+    console.error("[textExtractor] fetch شکست خورد یا HTML خالی بود.");
+    return undefined;
+  }
+  console.error(`[textExtractor] HTML دریافت شد، طول: ${html.length} کاراکتر`);
+
+  const $ = cheerio.load(html);
+
+  // heuristic ۱ (اولویت اول): عنصر با id/class شامل "abstract"
+  const abstractSelectors = [
+    "#ABSTRACT",
+    ".abstract",
+    'section[class*="abstract" i]',
+    'div[class*="abstract" i]',
+    'div[id*="abstract" i]',
+    'p[class*="abstract" i]',
+  ];
+  for (const selector of abstractSelectors) {
+    const el = $(selector).first();
+    const text = el.text().trim().replace(/\s+/g, " ");
+    console.error(
+      `[textExtractor] selector "${selector}" → طول متن: ${text.length}, نمونه: "${text.slice(0, 80)}"`
+    );
+    if (text.length > 40 && !looksLikeSiteBoilerplate(text)) {
+      console.error(`[textExtractor] ✅ قبول شد از selector "${selector}"`);
+      return text;
+    }
+  }
+
+  // heuristic ۲: یه heading با متن "Abstract"/"抄録" که پاراگراف بعدیش رو می‌گیریم
+  const headingMatch = $("h1, h2, h3, h4, dt, strong, b").filter((_, el) => {
+    const t = $(el).text().trim();
+    return /^(abstract|抄録)$/i.test(t);
+  });
+  console.error(`[textExtractor] تعداد heading های "Abstract" پیدا‌شده: ${headingMatch.length}`);
+  if (headingMatch.length > 0) {
+    let next = headingMatch.first().next();
+    // بعضی صفحات چندتا تگ خالی/wrapper بین heading و متن اصلی دارن
+    for (let i = 0; i < 3 && next.length; i++) {
+      const text = next.text().trim().replace(/\s+/g, " ");
+      console.error(
+        `[textExtractor] heading+${i + 1} sibling → طول: ${text.length}, نمونه: "${text.slice(0, 80)}"`
+      );
+      if (text.length > 40 && !looksLikeSiteBoilerplate(text)) {
+        console.error(`[textExtractor] ✅ قبول شد از heading sibling`);
+        return text;
+      }
+      next = next.next();
+    }
+  }
+
+  // heuristic ۳ (آخرین امید): متاتگ‌های SEO — فقط اگه boilerplate شناخته‌شده نباشن
+  const metaDescription =
+    $('meta[name="description"]').attr("content") ||
+    $('meta[property="og:description"]').attr("content");
+  console.error(
+    `[textExtractor] meta description: "${(metaDescription ?? "").slice(0, 100)}"`
+  );
+  if (
+    metaDescription &&
+    metaDescription.trim().length > 40 &&
+    !looksLikeSiteBoilerplate(metaDescription)
+  ) {
+    console.error("[textExtractor] ✅ قبول شد از meta description");
+    return metaDescription.trim();
+  }
+
+  console.error("[textExtractor] ❌ هیچ heuristic ای جواب نداد.");
+  return undefined;
+}
+
+function buildTextDownloadUrl(articleLink: string): string | null {
   try {
     const url = new URL(articleLink);
-    // الگوی موردانتظار: .../_article/-char/xx  (با یا بدون اسلش انتهایی)
     const match = url.pathname.match(/^(.*\/_article)\/-char\/([a-z]{2})\/?$/);
     if (!match) return null;
-
     const [, basePath, lang] = match;
     url.pathname = `${basePath}/download/-char/${lang}`;
     return url.toString();
@@ -29,126 +134,80 @@ export function buildTextDownloadUrl(articleLink: string): string | null {
   }
 }
 
+function parseReferencesFromRawText(
+  raw: string,
+  maxReferences: number
+): { references: string[]; totalReferencesFound: number } {
+  const text = raw.replace(/\r\n/g, "\n");
+  const refSectionMatch = text.match(/\n\s*(References|参考文献)\s*\n([\s\S]*)$/i);
+  if (!refSectionMatch) return { references: [], totalReferencesFound: 0 };
+
+  const refBlock = refSectionMatch[2];
+  const rawRefs = refBlock
+    .split(/\n(?=\s*(?:\[\d+\]|\d+[).]\s))/)
+    .map((r) => r.replace(/\s+/g, " ").trim())
+    .filter((r) => r.length > 5);
+
+  return {
+    references: rawRefs.slice(0, maxReferences),
+    totalReferencesFound: rawRefs.length,
+  };
+}
+
 export interface ExtractedArticleText {
   available: boolean;
   abstract?: string;
+  abstractSource?: "article_page" | "text_download";
   references?: string[];
   totalReferencesFound?: number;
   note: string;
-}
-
-/**
- * توی متن ساده‌ی txt، به‌صورت heuristic دنبال بخش Abstract و References می‌گرده.
- * چون این متن از OCR/تبدیل PDF میاد، فرمت دقیق بین نشریات مختلف فرق می‌کنه —
- * این یه best-effort parsing‌ه، نه یه پارسر تضمین‌شده.
- */
-function parseArticleText(
-  raw: string,
-  maxReferences: number
-): { abstract?: string; references: string[]; totalReferencesFound: number } {
-  const text = raw.replace(/\r\n/g, "\n");
-
-  // --- Abstract ---
-  // دنبال یه خط مستقل "Abstract" (یا "抄録" برای ژاپنی) می‌گردیم، تا قبل از
-  // اولین heading بعدی (مثل "Keywords" یا "1. Introduction" یا "References")
-  let abstract: string | undefined;
-  const abstractMatch = text.match(
-    /\n\s*(Abstract|抄録)\s*\n([\s\S]*?)\n\s*(Keywords?|キーワード|1\.\s|I\.\s|References|参考文献|Introduction)/i
-  );
-  if (abstractMatch) {
-    abstract = abstractMatch[2].replace(/\s+/g, " ").trim();
-  }
-
-  // --- References ---
-  let references: string[] = [];
-  const refSectionMatch = text.match(
-    /\n\s*(References|参考文献)\s*\n([\s\S]*)$/i
-  );
-  let totalReferencesFound = 0;
-  if (refSectionMatch) {
-    const refBlock = refSectionMatch[2];
-    // اکثر فرمت‌های رفرنس با یه شماره شروع می‌شن: "1)" یا "[1]" یا "1."
-    const rawRefs = refBlock
-      .split(/\n(?=\s*(?:\[\d+\]|\d+[).]\s))/)
-      .map((r) => r.replace(/\s+/g, " ").trim())
-      .filter((r) => r.length > 5);
-
-    totalReferencesFound = rawRefs.length;
-    references = rawRefs.slice(0, maxReferences);
-  }
-
-  return { abstract, references, totalReferencesFound };
 }
 
 export async function fetchAndParseArticleText(
   articleLink: string,
   maxReferences: number
 ): Promise<ExtractedArticleText> {
+  // مرحله‌ی ۱: چکیده از صفحه‌ی معمولی مقاله (universal، برای تقریباً همه‌ی مقالات)
+  const htmlAbstract = await extractAbstractFromArticlePage(articleLink);
+
+  // مرحله‌ی ۲: تلاش برای گرفتن References از نسخه‌ی txt (فقط بعضی نشریات)
+  let references: string[] = [];
+  let totalReferencesFound = 0;
+  let txtNote = "";
+
   const downloadUrl = buildTextDownloadUrl(articleLink);
-  if (!downloadUrl) {
+  if (downloadUrl) {
+    const rawText = await fetchUtf8(downloadUrl);
+    if (rawText && !rawText.trim().startsWith("<!DOCTYPE")) {
+      const parsed = parseReferencesFromRawText(rawText, maxReferences);
+      references = parsed.references;
+      totalReferencesFound = parsed.totalReferencesFound;
+    } else {
+      txtNote = " (نسخه‌ی متنی برای گرفتن References در دسترس نبود.)";
+    }
+  } else {
+    txtNote = " (این نشریه نسخه‌ی txt نداره، پس References در دسترس نیست.)";
+  }
+
+  if (!htmlAbstract && references.length === 0) {
     return {
       available: false,
       note:
-        "الگوی این لینک با فرمت شناخته‌شده‌ی txt-download مطابقت نداره. " +
-        "این قابلیت فقط برای بعضی نشریات J-STAGE (عمدتاً open-access) در دسترسه؛ " +
-        "برای این مقاله باید مستقیم از فیلد link/doi به سایت ناشر مراجعه کنی.",
-    };
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(downloadUrl, {
-      headers: { "User-Agent": "jstage-mcp-server/0.2.0" },
-    });
-  } catch (err) {
-    return {
-      available: false,
-      note: `درخواست به J-STAGE با خطا مواجه شد: ${(err as Error).message}`,
-    };
-  }
-
-  if (!response.ok) {
-    return {
-      available: false,
-      note: `نسخه‌ی متنی برای این مقاله در دسترس نیست (HTTP ${response.status}). احتمالاً این نشریه این قابلیت رو فعال نکرده.`,
-    };
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  const raw = await response.text();
-
-  // اگه پاسخ HTML باشه (نه txt خام)، یعنی این مقاله اصلاً نسخه‌ی متنی نداره
-  // و J-STAGE به‌جاش صفحه‌ی خطا/چکیده برگردونده.
-  if (contentType.includes("html") || raw.trim().startsWith("<!DOCTYPE")) {
-    return {
-      available: false,
-      note: "این مقاله نسخه‌ی txt نداره؛ J-STAGE به‌جای فایل متنی یه صفحه‌ی HTML برگردوند.",
-    };
-  }
-
-  const { abstract, references, totalReferencesFound } = parseArticleText(
-    raw,
-    maxReferences
-  );
-
-  if (!abstract && references.length === 0) {
-    return {
-      available: false,
-      note:
-        "فایل متنی دریافت شد ولی نتونستیم بخش Abstract یا References رو داخلش پیدا کنیم " +
-        "(احتمالاً فرمت این نشریه با الگوی heuristic فعلی فرق داره).",
+        "نه از صفحه‌ی مقاله تونستیم چکیده رو پیدا کنیم، نه نسخه‌ی txt برای References در دسترس بود. " +
+        "برای این مقاله باید مستقیم از لینک/DOI به سایت ناشر مراجعه کنی.",
     };
   }
 
   return {
     available: true,
-    abstract,
+    abstract: htmlAbstract,
+    abstractSource: htmlAbstract ? "article_page" : undefined,
     references,
     totalReferencesFound,
     note:
-      references.length < totalReferencesFound
-        ? `فقط ${references.length} مورد از مجموع ${totalReferencesFound} رفرنس برگردونده شده (برای کنترل حجم خروجی).`
-        : "استخراج کامل انجام شد.",
+      (htmlAbstract ? "چکیده از صفحه‌ی مقاله استخراج شد." : "چکیده پیدا نشد.") +
+      (references.length > 0
+        ? ` ${references.length} از ${totalReferencesFound} رفرنس هم برگردونده شد.`
+        : txtNote),
   };
 }
-

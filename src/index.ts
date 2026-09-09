@@ -11,6 +11,17 @@ const TRANSPORT_TYPE = process.env.MCP_TRANSPORT_TYPE ?? "stdio";
 // و انتظار دارن اپ روی همون گوش بده — برای همین اول PORT رو چک می‌کنیم.
 const HTTP_PORT = Number(process.env.PORT ?? process.env.MCP_HTTP_PORT ?? 3011);
 
+// لایه‌ی امنیتی آخر: اگه با وجود try/catchهای داخل هندلرها، خطایی از یه جای
+// دیگه (مثلاً یه promise فراموش‌شده) به‌صورت unhandled بالا بیاد، به‌جای کرش
+// خاموش کل پروسه (که روی Railway یعنی همه‌ی session‌های فعال قطع می‌شن)،
+// فقط لاگش می‌کنیم و پروسه رو زنده نگه می‌داریم.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+});
+
 async function runStdio() {
   const server = createJStageMcpServer();
   const transport = new StdioServerTransport();
@@ -47,55 +58,76 @@ async function runHttp() {
   > = {};
 
   app.post("/mcp", async (req: Request, res: Response) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-    if (sessionId && sessions[sessionId]) {
-      // درخواست بعدی از یه session از قبل شناخته‌شده — از همون transport استفاده کن
-      await sessions[sessionId].transport.handleRequest(req, res, req.body);
-      return;
-    }
+      if (sessionId && sessions[sessionId]) {
+        // درخواست بعدی از یه session از قبل شناخته‌شده — از همون transport استفاده کن
+        await sessions[sessionId].transport.handleRequest(req, res, req.body);
+        return;
+      }
 
-    if (!sessionId && isInitializeRequest(req.body)) {
-      // اولین درخواست یه session جدید — server و transport جدید بساز
-      const server = createJStageMcpServer();
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newSessionId) => {
-          sessions[newSessionId] = { server, transport };
+      if (!sessionId && isInitializeRequest(req.body)) {
+        // اولین درخواست یه session جدید — server و transport جدید بساز
+        const server = createJStageMcpServer();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            sessions[newSessionId] = { server, transport };
+          },
+        });
+
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            delete sessions[transport.sessionId];
+          }
+        };
+
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      // نه session شناخته‌شده، نه یه initialize جدید — درخواست نامعتبره
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Bad Request: No valid session ID provided.",
         },
+        id: null,
       });
-
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          delete sessions[transport.sessionId];
-        }
-      };
-
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-      return;
+    } catch (err) {
+      // بدون این catch، هر خطای async اینجا (مثلاً کرش داخل handleRequest یا
+      // createJStageMcpServer) به‌جای fail شدن فقط همین یه درخواست، می‌تونه
+      // کل پروسه‌ی Node رو (به‌عنوان unhandled rejection) پایین بکشه.
+      console.error("خطای غیرمنتظره در POST /mcp:", err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
     }
-
-    // نه session شناخته‌شده، نه یه initialize جدید — درخواست نامعتبره
-    res.status(400).json({
-      jsonrpc: "2.0",
-      error: {
-        code: -32000,
-        message: "Bad Request: No valid session ID provided.",
-      },
-      id: null,
-    });
   });
 
   // GET برای استریم SSE (پیام‌های سرور به کلاینت) و DELETE برای پایان دادن به session
   // هر دو نیاز به همون session از قبل مقداردهی‌شده دارن.
   const handleSessionRequest = async (req: Request, res: Response) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    if (!sessionId || !sessions[sessionId]) {
-      res.status(400).send("Invalid or missing session ID");
-      return;
+    try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      if (!sessionId || !sessions[sessionId]) {
+        res.status(400).send("Invalid or missing session ID");
+        return;
+      }
+      await sessions[sessionId].transport.handleRequest(req, res);
+    } catch (err) {
+      console.error("خطای غیرمنتظره در GET/DELETE /mcp:", err);
+      if (!res.headersSent) {
+        res.status(500).send("Internal server error");
+      }
     }
-    await sessions[sessionId].transport.handleRequest(req, res);
   };
 
   app.get("/mcp", handleSessionRequest);

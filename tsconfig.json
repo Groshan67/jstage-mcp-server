@@ -12,6 +12,6 @@
     "resolveJsonModule": true,
     "declaration": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "summarizeAndQa.ts"],
   "exclude": ["node_modules", "build"]
 }
