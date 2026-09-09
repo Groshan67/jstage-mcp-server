@@ -1,4 +1,7 @@
 import * as cheerio from "cheerio";
+import { appendFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 /**
  * دو راه برای گرفتن Abstract/References از J-STAGE:
@@ -13,6 +16,23 @@ import * as cheerio from "cheerio";
  *
  * هر دو best-effort و heuristic هستن؛ نه بخشی از J-STAGE WebAPI رسمی.
  */
+
+// چون MCP Inspector معمولاً stderr پروسه‌ی سرور رو خودش می‌گیره و توی UI
+// مرورگر نشون می‌ده (نه توی ترمینال)، برای دیباگ مطمئن‌تره لاگ رو مستقیم
+// توی یه فایل بنویسیم — مستقل از این‌که Inspector/ترمینال/WSL چیکار می‌کنن.
+// فایل کنار build/ ساخته می‌شه: debug.log
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const DEBUG_LOG_PATH = join(__dirname, "..", "..", "debug.log");
+
+function debugLog(message: string): void {
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+  try {
+    appendFileSync(DEBUG_LOG_PATH, line, "utf-8");
+  } catch {
+    // اگه نوشتن فایل هم شکست خورد، حداقل stderr رو امتحان کن
+    console.error(message);
+  }
+}
 
 async function fetchUtf8(url: string): Promise<string | null> {
   try {
@@ -48,13 +68,13 @@ function looksLikeSiteBoilerplate(text: string): boolean {
 async function extractAbstractFromArticlePage(
   articleLink: string
 ): Promise<string | undefined> {
-  console.error(`[textExtractor] در حال fetch کردن: ${articleLink}`);
+  debugLog(`[textExtractor] در حال fetch کردن: ${articleLink}`);
   const html = await fetchUtf8(articleLink);
   if (!html) {
-    console.error("[textExtractor] fetch شکست خورد یا HTML خالی بود.");
+    debugLog("[textExtractor] fetch شکست خورد یا HTML خالی بود.");
     return undefined;
   }
-  console.error(`[textExtractor] HTML دریافت شد، طول: ${html.length} کاراکتر`);
+  debugLog(`[textExtractor] HTML دریافت شد، طول: ${html.length} کاراکتر`);
 
   const $ = cheerio.load(html);
 
@@ -70,11 +90,11 @@ async function extractAbstractFromArticlePage(
   for (const selector of abstractSelectors) {
     const el = $(selector).first();
     const text = el.text().trim().replace(/\s+/g, " ");
-    console.error(
+    debugLog(
       `[textExtractor] selector "${selector}" → طول متن: ${text.length}, نمونه: "${text.slice(0, 80)}"`
     );
     if (text.length > 40 && !looksLikeSiteBoilerplate(text)) {
-      console.error(`[textExtractor] ✅ قبول شد از selector "${selector}"`);
+      debugLog(`[textExtractor] ✅ قبول شد از selector "${selector}"`);
       return text;
     }
   }
@@ -84,17 +104,17 @@ async function extractAbstractFromArticlePage(
     const t = $(el).text().trim();
     return /^(abstract|抄録)$/i.test(t);
   });
-  console.error(`[textExtractor] تعداد heading های "Abstract" پیدا‌شده: ${headingMatch.length}`);
+  debugLog(`[textExtractor] تعداد heading های "Abstract" پیدا‌شده: ${headingMatch.length}`);
   if (headingMatch.length > 0) {
     let next = headingMatch.first().next();
     // بعضی صفحات چندتا تگ خالی/wrapper بین heading و متن اصلی دارن
     for (let i = 0; i < 3 && next.length; i++) {
       const text = next.text().trim().replace(/\s+/g, " ");
-      console.error(
+      debugLog(
         `[textExtractor] heading+${i + 1} sibling → طول: ${text.length}, نمونه: "${text.slice(0, 80)}"`
       );
       if (text.length > 40 && !looksLikeSiteBoilerplate(text)) {
-        console.error(`[textExtractor] ✅ قبول شد از heading sibling`);
+        debugLog(`[textExtractor] ✅ قبول شد از heading sibling`);
         return text;
       }
       next = next.next();
@@ -105,7 +125,7 @@ async function extractAbstractFromArticlePage(
   const metaDescription =
     $('meta[name="description"]').attr("content") ||
     $('meta[property="og:description"]').attr("content");
-  console.error(
+  debugLog(
     `[textExtractor] meta description: "${(metaDescription ?? "").slice(0, 100)}"`
   );
   if (
@@ -113,11 +133,11 @@ async function extractAbstractFromArticlePage(
     metaDescription.trim().length > 40 &&
     !looksLikeSiteBoilerplate(metaDescription)
   ) {
-    console.error("[textExtractor] ✅ قبول شد از meta description");
+    debugLog("[textExtractor] ✅ قبول شد از meta description");
     return metaDescription.trim();
   }
 
-  console.error("[textExtractor] ❌ هیچ heuristic ای جواب نداد.");
+  debugLog("[textExtractor] ❌ هیچ heuristic ای جواب نداد.");
   return undefined;
 }
 
