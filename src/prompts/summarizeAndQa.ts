@@ -16,21 +16,19 @@ export function registerSummarizeAndQaPrompt(server: McpServer): void {
     {
       title: "خلاصه‌سازی و پرسش‌وپاسخ فارسی روی مقاله‌ی J-STAGE",
       description:
-        "چکیده‌ی یه مقاله رو می‌گیره و از Claude می‌خواد یه خلاصه‌ی روان و طبیعی فارسی " +
-        "(نه ترجمه‌ی تحت‌اللفظی) بنویسه، و اگه سوالی داده بشه، بهش به فارسی و دقیقاً " +
-        "بر پایه‌ی همون چکیده پاسخ بده.",
+        "چکیده‌ی یه مقاله رو می‌گیره و یه خلاصه‌ی روان و طبیعی فارسی برات مبنویسه" ,        
       argsSchema: {
         article_link: z
           .string()
           .url()
-          .describe(
-            "لینک مقاله (از فیلد article_link.en یا article_link.ja که jstage_search_articles برمی‌گردونه)"
+          .describe(            
+            "article_link.en or article_link.ja"
           ),
         question: z
           .string()
           .optional()
           .describe(
-            "سوال اختیاری به فارسی درباره‌ی این مقاله. اگه خالی باشه، فقط خلاصه‌سازی انجام می‌شه."
+            "سوال اختیاری درباره‌ی این مقاله. اگه خالی باشه، فقط خلاصه‌سازی انجام می‌شه."
           ),
       },
     },
