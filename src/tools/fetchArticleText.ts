@@ -20,48 +20,32 @@ export const fetchArticleTextSchema = {
 export async function fetchArticleTextHandler(
   args: z.infer<z.ZodObject<typeof fetchArticleTextSchema>>
 ) {
-  try {
-    const result = await fetchAndParseArticleText(
-      args.article_link,
-      args.max_references
-    );
+  const result = await fetchAndParseArticleText(
+    args.article_link,
+    args.max_references
+  );
 
-    if (!result.available) {
-      return {
-        content: [{ type: "text" as const, text: result.note }],
-      };
-    }
-
+  if (!result.available) {
     return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(
-            {
-              abstract: result.abstract ?? "(پیدا نشد)",
-              references: result.references ?? [],
-              totalReferencesFound: result.totalReferencesFound,
-              note: result.note,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text:
-            `خطا در دریافت یا تحلیل متن مقاله از لینک داده‌شده رخ داد: ${message}\n` +
-            "این می‌تونه به‌خاطر تغییر ساختار صفحه، محدودیت دسترسی، یا مشکل موقت شبکه باشه. " +
-            "می‌تونی به‌جای این ابزار، مستقیماً از لینک/DOI مقاله در جستجوی قبلی استفاده کنی.",
-        },
-      ],
-      isError: true,
+      content: [{ type: "text" as const, text: result.note }],
     };
   }
+
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: JSON.stringify(
+          {
+            abstract: result.abstract ?? "(پیدا نشد)",
+            references: result.references ?? [],
+            totalReferencesFound: result.totalReferencesFound,
+            note: result.note,
+          },
+          null,
+          2
+        ),
+      },
+    ],
+  };
 }

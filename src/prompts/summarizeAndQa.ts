@@ -16,7 +16,7 @@ export function registerSummarizeAndQaPrompt(server: McpServer): void {
     {
       title: "خلاصه‌سازی و پرسش‌وپاسخ فارسی روی مقاله‌ی J-STAGE",
       description:
-        "چکیده‌ی یه مقاله رو می‌گیره و یه خلاصه‌ی روان و طبیعی فارسی برات مبنویسه" ,        
+        "چکیده‌ی یه مقاله رو می‌گیره و یه خلاصه‌ی روان و طبیعی فارسی برات مینویسه" ,        
       argsSchema: {
         article_link: z
           .string()
