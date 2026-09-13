@@ -47,7 +47,7 @@ export function registerResearchPlanPrompt(server: McpServer): void {
   server.registerPrompt(
     "jstage_research_plan",
     {
-      title: " J-STAGE برنامه‌ی تحقیق روی",
+      title: " J-STAGE برنامه‌ ی تحقیق روی",
       description:
         "یه برنامه‌ی جستجوی چندمرحله‌ای و آماده روی J-STAGE برای یه موضوع مشخص می‌سازه — ",        
       argsSchema: {

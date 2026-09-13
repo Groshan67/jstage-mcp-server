@@ -14,7 +14,7 @@ export function registerSummarizeAndQaPrompt(server: McpServer): void {
   server.registerPrompt(
     "jstage_summarize_and_qa",
     {
-      title: "خلاصه‌سازی و پرسش‌وپاسخ فارسی روی مقاله‌ی J-STAGE",
+      title: "خلاصه‌ سازی و پرسش‌ وپاسخ فارسی روی مقاله‌ ی J-STAGE",
       description:
         "چکیده‌ی یه مقاله رو می‌گیره و یه خلاصه‌ی روان و طبیعی فارسی برات مینویسه" ,        
       argsSchema: {
